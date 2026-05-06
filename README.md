@@ -471,3 +471,109 @@ Las direcciones virtuales son locales a cada proceso.
 > comportamiento malicioso no pueda corromper la memoria de otros procesos
 > ni la del propio kernel. Es uno de los pilares de seguridad y estabilidad
 > de los sistemas operativos modernos.
+
+---
+
+# 2) API de memoria
+## Actividad 2.1: Programa base
+<img width="1307" height="431" alt="image" src="https://github.com/user-attachments/assets/21114ec0-7888-4784-ad92-82487ac44a76" />
+
+## Atividad 2.2: Uso correcto de malloc y free
+### Punto 1
+**¿Reporta errores o fugas de memoria?**
+
+No. La ejecución es completamente limpia, confirmado por dos líneas clave:
+
+- **`All heap blocks were freed -- no leaks are possible`** → ninguna fuga de memoria.
+- **`ERROR SUMMARY: 0 errors from 0 contexts`** → ningún error de acceso a memoria.
+
+### Análisis del HEAP SUMMARY
+
+| Campo | Valor | Significado |
+|---|---|---|
+| `in use at exit` | 0 bytes en 0 bloques | No quedó ningún bloque sin liberar al terminar el programa |
+| `total heap usage` | 3 allocs, 3 frees | Cada asignación tuvo su correspondiente liberación |
+| `bytes allocated` | 1,144 bytes | Total acumulado durante toda la ejecución |
+
+Aunque el código solo llama explícitamente a `malloc` y `realloc`, Valgrind reporta **3 allocs** porque la librería estándar de C (`stdio`) también reserva un buffer interno al usar `printf`. El desglose aproximado es:
+
+- `malloc` inicial → 40 bytes (10 enteros)
+- `realloc` → 80 bytes (20 enteros)
+- Buffer interno de `stdio` → ~1,024 bytes
+
+### ¿Qué significa "All heap blocks were freed"?
+
+Este mensaje indica que cada byte reservado dinámicamente fue correctamente liberado antes de que el programa terminara. Valgrind rastrea cada llamada a `malloc`/`realloc` y verifica que exista un `free` correspondiente. Al confirmar que el balance es cero (`3 allocs == 3 frees` y `in use at exit: 0 bytes`), garantiza que no hay fugas de memoria posibles.
+
+> **Nota:** Si se hubiera omitido el `free(arr)` al final del programa, Valgrind habría reportado algo como:
+> ```
+> LEAK SUMMARY:
+>    definitely lost: 80 bytes in 1 blocks
+> ```
+> indicando exactamente cuántos bytes y en cuántos bloques se produjo la fuga.
+
+---
+### Punto 2
+**¿Por qué usar `sizeof(int)` en lugar del literal `4`?**
+
+Escribir `malloc(n * 4)` asume que un `int` **siempre** ocupa 4 bytes. Esto es falso en términos
+del estándar C: el tamaño de `int` depende de la arquitectura y el compilador.
+
+**¿Cuánto puede medir un `int` según la arquitectura?**
+
+| Arquitectura / Plataforma | Tamaño de `int` |
+|---|---|
+| x86 / x86-64 (PC moderno) | 4 bytes |
+| AVR (microcontroladores Arduino) | 2 bytes |
+| Algunos sistemas embebidos de 8/16 bits | 2 bytes |
+| Cray (supercomputadoras antiguas) | 8 bytes |
+
+El estándar C solo garantiza que `int` tiene al menos 16 bits. El resto depende
+de la implementación.
+
+**Ventaja de `sizeof(int)`**
+
+`sizeof` es evaluado en tiempo de compilación por el compilador, quien conoce exactamente
+cuánto ocupa cada tipo en esa arquitectura específica. Esto significa:
+
+- Mismo código fuente compila y funciona correctamente en cualquier plataforma.
+- Si en una arquitectura `int` mide 2 bytes, `sizeof(int)` retorna `2` automáticamente.
+- No hay que buscar y reemplazar literales numéricos al portar el código.
+
+**Regla general**
+
+> Nunca asumir el tamaño de un tipo de dato en C. Siempre usar `sizeof` para que
+> el compilador determine el tamaño correcto en cada plataforma.
+
+Esto aplica no solo a `int`, sino a cualquier tipo: `double`, `long`, structs, etc.
+
+### Punto 3
+**¿Qué devuelve `malloc` cuando no hay memoria disponible?**
+
+Cuando el sistema no puede satisfacer la solicitud de memoria, `malloc` devuelve **`NULL`**
+(un puntero nulo, es decir, la dirección `0x0`). No lanza una excepción ni detiene el programa:
+simplemente retorna `NULL` y continúa.
+
+**¿Por qué es crítico verificar ese valor?**
+
+Si no se verifica y se intenta usar el puntero `NULL` como si fuera memoria válida, ocurre
+una desreferenciación de puntero nulo, lo cual produce:
+
+| Consecuencia | Descripción |
+|---|---|
+| **Segmentation Fault** | El SO detecta el acceso a dirección inválida y mata el proceso |
+| **Comportamiento indefinido** | El estándar C no garantiza nada; puede pasar cualquier cosa |
+| **Corrupción de datos** | En sistemas sin protección de memoria podría sobrescribir datos ajenos |
+| **Vulnerabilidad de seguridad** | Atacantes pueden explotar la falta de validación para ejecutar código arbitrario |
+
+
+**¿Cuándo puede fallar `malloc`?**
+
+- El sistema no tiene suficiente memoria RAM + swap disponible.
+- El proceso alcanzó su límite de memoria asignado por el SO.
+- El heap está fragmentado y no hay un bloque contiguo del tamaño solicitado.
+- Se solicita un tamaño absurdamente grande (ej: `malloc(-1)` que por desbordamiento
+se convierte en un número enorme).
+
+> **Regla crítica:** Toda llamada a `malloc`, `realloc` o `calloc` debe ir seguida
+> de una verificación de `NULL`. Omitirla es un error de programación, no una optimización.
