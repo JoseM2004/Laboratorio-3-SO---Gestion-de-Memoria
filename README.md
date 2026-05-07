@@ -577,3 +577,309 @@ se convierte en un número enorme).
 
 > **Regla crítica:** Toda llamada a `malloc`, `realloc` o `calloc` debe ir seguida
 > de una verificación de `NULL`. Omitirla es un error de programación, no una optimización.
+
+---
+## Actividad 2.3 Código bon bugs de memoria
+<img width="1062" height="203" alt="image" src="https://github.com/user-attachments/assets/8b06f71f-65c3-4334-9994-9c534014fe21" />
+<img width="1096" height="875" alt="image" src="https://github.com/user-attachments/assets/14649ab8-2775-4a10-a196-29940c44f6e6" />
+
+## Actividad 2.4: Identificar y corregir errores de memoria
+### Punto 1: Mensajes de Valgrind y su correspondencia con cada error
+#### Error 1 — Buffer Overflow (desbordamiento de búfer)
+**Mensaje de Valgrind:**
+```text
+==3406== Invalid write of size 4
+==3406==    at 0x1091E3: main (buggy_mem.c:10)
+==3406==  Address 0x4a74054 is 0 bytes after a block of size 20 alloc'd
+==3406==    at 0x4846828: malloc (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==3406==    by 0x1091BE: main (buggy_mem.c:8)
+```
+**Causa en el código:**
+```c
+int *p = malloc(5 * sizeof(int));  // bloque válido: índices 0..4
+for (int i = 0; i <= 5; i++)       //  i=5 queda fuera del bloque
+    p[i] = i;
+```
+
+El operador `<=` hace que el bucle escriba en `p[5]`, una posición que está **0 bytes después**
+del bloque reservado (de ahí el mensaje *"0 bytes after a block of size 20"*). Valgrind lo
+detecta como una **escritura inválida de 4 bytes**.
+
+---
+
+#### Error 2 — Memory Leak (fuga de memoria)
+
+**Mensaje de Valgrind:**
+```text
+==3406== 100 bytes in 1 blocks are definitely lost in loss record 1 of 1
+==3406==    at 0x4846828: malloc (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==3406==    by 0x1091F8: main (buggy_mem.c:13)
+==3406== LEAK SUMMARY:
+==3406==    definitely lost: 100 bytes in 1 blocks
+```
+**Causa en el código:**
+```c
+char *q = malloc(100);   // se reservan 100 bytes
+strcpy(q, "hola mundo");
+printf("%s\n", q);
+//  nunca se llama free(q)
+```
+
+El puntero `q` nunca es liberado. Valgrind lo clasifica como *"definitely lost"*: el programa
+terminó y esos 100 bytes quedaron reservados sin que nadie los devolviera al sistema.
+
+---
+
+#### Error 3 — Use-After-Free (uso después de liberar)
+
+**Mensaje de Valgrind:**
+```text
+==3406== Invalid read of size 4
+==3406==    at 0x109231: main (buggy_mem.c:19)
+==3406==  Address 0x4a74040 is 0 bytes inside a block of size 20 free'd
+==3406==    at 0x484988F: free (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==3406==    by 0x10922C: main (buggy_mem.c:18)
+==3406==  Block was alloc'd at
+==3406==    at 0x4846828: malloc (...)
+==3406==    by 0x1091BE: main (buggy_mem.c:8)
+```
+
+**Causa en el código:**
+```c
+free(p);                          // se libera el bloque
+printf("p[0] = %d\n", p[0]);     //  se lee memoria ya liberada
+```
+
+Después de `free(p)`, el bloque ya no le pertenece al programa. Valgrind detecta una
+**lectura inválida de 4 bytes** dentro de un bloque que ya fue liberado, e incluso indica
+en qué línea se hizo el `free` y dónde se hizo el `malloc` original.
+
+---
+
+### Resumen de errores detectados
+
+| # | Error | Tipo | Detectado por | Línea |
+|---|---|---|---|---|
+| 1 | `p[5] = 5` fuera del bloque | Buffer Overflow | `Invalid write of size 4` | buggy_mem.c:10 |
+| 2 | `q` nunca liberado | Memory Leak | `definitely lost: 100 bytes` | buggy_mem.c:13 |
+| 3 | Lectura de `p` tras `free` | Use-After-Free | `Invalid read of size 4` | buggy_mem.c:19 |
+
+> **ERROR SUMMARY: 3 errors from 3 contexts** — cada error clásico tiene exactamente
+> un mensaje correspondiente en la salida de Valgrind.
+
+### Punto 2: buggy_mem_fixed.c (Programa corregido)
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+int main() {
+
+    int *p = malloc(5 * sizeof(int));
+    for (int i = 0; i < 5; i++) /* Corregido: < en vez de <= */
+    p[i] = i;
+
+    
+    char *q = malloc(100);
+    strcpy(q, "hola mundo");
+    printf("%s\n", q);
+    free(q); /* Corregido: se libera la memoria de q para evitar memory leak */
+
+    
+    printf("p[0] = %d\n", p[0]); /* Corregido: se accede a p antes de liberarla */
+    free(p);
+    
+    
+    return 0;
+}
+```
+#### Verificación con Valgrind del programa corregido:
+
+<img width="1384" height="433" alt="image" src="https://github.com/user-attachments/assets/faf3e02e-cb23-42af-aa59-d52d43cd7ac4" />
+
+La salida de Valgrind confirma que todas las correcciones fueron efectivas:
+
+- **`in use at exit: 0 bytes in 0 blocks`** → no quedó ningún bloque sin liberar.
+- **`3 allocs, 3 frees`** → cada `malloc` tiene su `free` correspondiente.
+- **`All heap blocks were freed -- no leaks are possible`** → sin fugas de memoria.
+- **`ERROR SUMMARY: 0 errors from 0 contexts`** → sin buffer overflows ni use-after-free.
+
+El programa corregido pasa la verificación de Valgrind con cero errores y cero fugas.
+
+### Punto 3: Consecuencias de un use-after-free en términos de seguridad y estabilidad
+
+#### ¿Qué ocurre internamente?
+
+Cuando se llama `free(p)`, el bloque de memoria se devuelve al administrador del heap,
+quien puede asignarlo a cualquier otra parte del programa en cualquier momento. Sin embargo,
+el puntero `p` sigue apuntando a esa misma dirección. Si se accede a `p` después del `free`,
+se está leyendo o escribiendo memoria que ya no le pertenece al programa.
+
+#### Consecuencias en estabilidad
+
+| Escenario | Consecuencia |
+|---|---|
+| El bloque aún no fue reasignado | La lectura devuelve basura; el programa continúa con datos incorrectos |
+| El bloque fue reasignado a otra variable | Se corrompen datos de otra parte del programa, produciendo fallos impredecibles |
+| Se escribe sobre memoria liberada | Puede corromper las estructuras internas del heap, causando crashes posteriores |
+| El SO detecta el acceso inválido | Segmentation Fault y terminación abrupta del proceso |
+
+El problema más peligroso para la estabilidad es que **el crash no ocurre necesariamente
+en el punto del use-after-free**, sino mucho después, cuando la corrupción ya se propagó.
+Esto hace que estos bugs sean extremadamente difíciles de diagnosticar sin herramientas
+como Valgrind.
+
+#### Consecuencias en seguridad
+
+Un use-after-free es una vulnerabilidad crítica ampliamente explotada. Los vectores de
+ataque más comunes son:
+
+- **Heap spraying:** el atacante provoca que el bloque liberado sea reasignado con datos
+que él controla. Cuando el programa accede al puntero colgante, ejecuta código malicioso.
+- **Escalación de privilegios:** si el bloque liberado pertenecía a una estructura con
+permisos o credenciales, el atacante puede sustituir esos valores.
+- **Ejecución de código arbitrario:** en entornos sin protecciones modernas, un atacante
+puede redirigir el flujo de ejecución del programa hacia shellcode propio.
+
+> Los use-after-free son tan graves que tienen su propia categoría en el catálogo de
+> vulnerabilidades internacionales: **CWE-416**. Han sido la causa raíz de
+> vulnerabilidades críticas en navegadores, kernels de sistemas operativos y software
+> de producción ampliamente usado.
+
+#### Buenas prácticas para prevenirlos
+
+```c
+free(p);
+p = NULL;  // anular el puntero después de liberar
+           // un acceso posterior causará Segfault inmediato y detectable,
+           // en lugar de comportamiento indefinido silencioso
+```
+
+Anular el puntero tras el `free` no elimina el bug, pero convierte un error silencioso
+e impredecible en un fallo inmediato y localizable.
+
+---
+# 3) Traducción de direcciones — Base & Bounds
+
+## Actividad: Base & Bounds — Análisis
+### Punto 1: Compilar y ejecutar
+
+<img width="1068" height="351" alt="image" src="https://github.com/user-attachments/assets/d5729e4c-0abe-4a12-8ccd-0971eb544d80" />
+
+#### Salida completa del programa:
+```text
+--- Proceso A (base=32, bounds=64) ---
+VA=  0 -> PA= 32
+VA= 10 -> PA= 42
+VA= 63 -> PA= 95
+[EXCEPCION] VA=64 viola bounds=64
+[EXCEPCION] VA=100 viola bounds=64
+--- Proceso B (base=128, bounds=80) ---
+VA=  0 -> PA=128
+VA= 10 -> PA=138
+VA= 63 -> PA=191
+VA= 64 -> PA=192
+[EXCEPCION] VA=100 viola bounds=80
+```
+#### ¿Qué ocurre al acceder a VA=64 y VA=100 en el Proceso A?
+
+El Proceso A tiene `base=32` y `bounds=64`, lo que significa que sus direcciones virtuales
+válidas van de `0` a `63` (64 posiciones en total). La traducción funciona así:
+```text
+PA = base + VA  →  solo si  0 <= VA < bounds
+```
+
+| VA | ¿Válido? | Cálculo | Resultado |
+|---|---|---|---|
+| 0  | Si | 32 + 0  | PA = 32  |
+| 10 | Si | 32 + 10 | PA = 42  |
+| 63 | Si | 32 + 63 | PA = 95  |
+| 64 | No | 64 >= 64 | EXCEPCIÓN |
+| 100 | No | 100 >= 64 | EXCEPCIÓN |
+
+- **VA=64** es el primer acceso fuera del espacio válido. Aunque solo excede el límite
+por 1, ya viola el bounds y se lanza la excepción.
+- **VA=100** está muy por fuera del espacio del proceso, y también es rechazado.
+
+Ambos accesos quedarían en territorio de otro proceso o del SO si no existiera
+el mecanismo de protección, lo que representaría una violación de aislamiento de memoria.
+
+### ¿Qué haría el SO real ante esta excepción?
+
+En un sistema operativo real con hardware de protección de memoria (MMU), el proceso
+de manejo de esta excepción sería el siguiente:
+
+1. La MMU detecta la violación en hardware antes de que el acceso llegue a la RAM.
+2. Se genera una interrupción de protección de memoria, conocida como *segmentation fault*
+o *protection fault*, según la arquitectura.
+3. El hardware transfiere el control al SO, guardando el estado del proceso infractor.
+4. El SO identifica la causa: la dirección virtual solicitada está fuera del rango
+`[base, base + bounds)` del proceso.
+5. El SO envía una señal al proceso infractor: en Linux/Unix envía `SIGSEGV`
+(*Segmentation Violation*), que por defecto termina el proceso y puede generar un
+volcado de memoria (*core dump*) para análisis posterior.
+6. El proceso es terminado de forma forzada, sin afectar a otros procesos ni al SO,
+gracias al aislamiento que provee precisamente el mecanismo de base y bounds.
+
+> Este mecanismo es la base del aislamiento de procesos: cada proceso solo puede
+> acceder a su propio espacio de direcciones. Cualquier intento de salirse de ese espacio
+> es interceptado por el hardware y manejado por el SO, garantizando que un proceso
+> defectuoso o malicioso no pueda corromper la memoria de otros procesos.
+
+### Punto 2: Agregar Proceso C (base=0, bounds=32)
+ ```c
+int main() {
+    ...
+
+    Registro proC = {0, 32}; /* base=0, bounds=32 */
+    ...
+
+    printf("--- Proceso C (base=%d, bounds=%d) ---\n",
+        proC.base, proC.bounds);
+    for (int i = 0; i < n; i++) {
+        int pa = traducir(proC, vas[i]);
+        if (pa != -1)
+        printf(" VA=%3d -> PA=%3d\n", vas[i], pa);
+    }
+
+    ...
+}
+```
+#### Traduciendo las mismas direcciones:
+<img width="453" height="142" alt="image" src="https://github.com/user-attachments/assets/5216a50e-407d-42cc-a739-b8692000041d" />
+
+#### ¿Puede el Proceso A acceder a las direcciones del Proceso C directamente?
+
+No. Aunque las direcciones físicas del Proceso C van de `PA=0` a `PA=31`, el Proceso A
+solo puede generar direcciones virtuales en el rango `[0, 63)`, que su MMU traduce
+siempre sumando su base: `PA = 32 + VA`. Es imposible que el Proceso A produzca
+una dirección física menor a 32, por lo que nunca puede tocar la memoria del Proceso C.
+
+Cada proceso vive en su propio espacio virtual. El mecanismo de base y bounds garantiza
+que la traducción VA → PA siempre quede confinada al segmento físico asignado a ese
+proceso, haciendo que el acceso directo entre procesos sea arquitecturalmente imposible.
+
+### Punto 3: Limitación princiapal del esquema base & bounds
+
+El esquema base & bounds asigna a cada proceso un único bloque contiguo de memoria
+física. Esta restricción genera dos problemas fundamentales:
+
+**1. Fragmentación externa:** a medida que los procesos se crean y terminan, el espacio
+libre queda dividido en huecos dispersos. Puede haber suficiente memoria libre en total,
+pero ningún bloque contiguo lo suficientemente grande para un proceso nuevo.
+
+**2. Ineficiencia interna:** el bloque debe reservarse para el tamaño máximo que el proceso
+podría necesitar. La memoria entre el stack y el heap, que aún no ha sido usada, queda
+reservada pero desperdiciada.
+
+```text
+Memoria física:
+┌──────────┬───────────────┬──────────┬───────────────┐
+│ Proceso A│  DESPERDICIO  │ Proceso B│  HUECO LIBRE  │
+│ (usado)  │  (reservado)  │ (usado)  │  (inutilizable│
+└──────────┴───────────────┴──────────┴───────────────┘
+```
+La segmentación surge para resolver esto: en lugar de un solo registro base & bounds,
+cada proceso tiene múltiples segmentos (código, heap, stack), cada uno con su propio
+par base & bounds. Así cada segmento ocupa solo la memoria que realmente necesita,
+reduciendo el desperdicio y aprovechando mejor los huecos disponibles.
