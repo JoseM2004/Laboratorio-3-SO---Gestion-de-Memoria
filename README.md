@@ -883,3 +883,170 @@ La segmentación surge para resolver esto: en lugar de un solo registro base & b
 cada proceso tiene múltiples segmentos (código, heap, stack), cada uno con su propio
 par base & bounds. Así cada segmento ocupa solo la memoria que realmente necesita,
 reduciendo el desperdicio y aprovechando mejor los huecos disponibles.
+---
+# 4 Paginación 
+## 4.1 Traducción manual con tabla de segmentos
+### Punto 1: Cálculo paso a paso para cada VA
+#### Reglas de traducción
+
+- **Segmento positivo:** válido si `0 <= offset < tamaño`. Luego `PA = base + offset`.
+- **Segmento negativo (stack):** válido si `offset >= (offset(max) - tamaño)`. `Offset(max) = 2^(# bits del offset)`
+  Luego `PA = base - (offset(max) - offset)`.
+
+#### VA = 0x03A0 — Segmento Code (selector 00)
+<img width="975" height="208" alt="image" src="https://github.com/user-attachments/assets/961b0188-7d4c-4f29-aacc-01009153014b" />
+
+#### VA = 0x1800 — Segmento Heap (selector 01)
+<img width="925" height="212" alt="image" src="https://github.com/user-attachments/assets/aa6b9698-d1bc-4d7c-9593-66fd3b3faec4" />
+
+#### VA = 0x3C00 — Segmento Stack (selector 11)
+<img width="1057" height="720" alt="image" src="https://github.com/user-attachments/assets/99ad487d-1349-42b2-9f1a-39b2197d9f0e" />
+
+#### VA = 0x0C00 — Segmento Code (selector 00)
+<img width="850" height="171" alt="image" src="https://github.com/user-attachments/assets/704d814a-c44d-49b4-af52-94fb80f29d1d" />
+
+#### VA = 0x2200 — Selector inválido (selector 10)
+<img width="713" height="167" alt="image" src="https://github.com/user-attachments/assets/bf81c684-018c-49d2-ac2e-f85aa21785b8" />
+
+#### Tabla completa resuelta
+<img width="677" height="277" alt="image" src="https://github.com/user-attachments/assets/a9d8ab99-11e6-4f51-9eb4-b1067cad5a2a" />
+
+---
+| VA (hex) | Selector | Offset | Segmento | PA o Excepción |
+|---|---|---|---|---|
+| 0x03A0 | 00 | 0x3A0 | Code  | PA = **0x43A0** |
+| 0x1800 | 01 | 0x800 | Heap  | PA = **0x6800** |
+| 0x3C00 | 11 | 0xC00 | Stack | PA = **0x2400** |
+| 0x0C00 | 00 | 0xC00 | Code  | **EXCEPCIÓN** (offset 0xC00 (3k) >= tamaño 0x800 (2k)) |
+| 0x2200 | 10 | —     | ???   | **EXCEPCIÓN** (selector 10 no definido) |
+
+### Punto 2: Caracteristicas del Stack
+
+#### ¿Por qué el stack crece en dirección negativa?
+
+Es una convención histórica que viene del diseño original de los procesadores x86. Cuando
+un programa llama a una función, el stack necesita guardar datos (parámetros, dirección de
+retorno, variables locales). Para no colisionar con el heap, que crece hacia arriba, se
+decidió que el stack creciera en dirección contraria, hacia abajo.
+
+```text
+Memoria virtual de un proceso:
+0x0000  ┌─────────────┐
+│    Code     │
+├─────────────┤
+│    Heap     │  crece hacia ↓
+│      ↓      │
+│             │  (espacio libre)
+│      ↑      │
+│    Stack    │  crece hacia ↑ (direcciones decrecientes)
+0xFFFF  └─────────────┘
+```
+Esto permite que heap y stack compartan el espacio libre del medio y crezcan
+uno hacia el otro sin necesidad de reservar tamaños fijos para cada uno.
+
+#### Ajuste especial en la fórmula del PA
+
+Para segmentos que crecen positivo la fórmula es directa:  
+
+```text
+PA = base + offset
+```
+Pero el stack crece negativo, por lo que la `base` apunta al tope superior del segmento,
+no al inicio. El offset no se puede sumar directamente porque eso llevaría la dirección
+hacia arriba, fuera del segmento. Se necesita convertirlo en un desplazamiento negativo:
+
+<img width="720" height="167" alt="Captura de pantalla 2026-05-06 205313" src="https://github.com/user-attachments/assets/a66f6bd4-b10d-48e2-a1a3-f958e488ba0c" />
+
+Donde `Offset(max) = 2^(# bits del offset)`
+
+### Punto 3: Ventaja de la segmentación frente a Base & Bounds
+
+Con base & bounds, cada proceso recibe un único bloque contiguo de memoria física que
+debe ser lo suficientemente grande para contener todo: código, heap y stack. El espacio
+entre el heap y el stack queda reservado pero vacío, desperdiciando memoria física.
+
+La segmentación elimina esto dividiendo el espacio del proceso en segmentos independientes,
+cada uno con su propio par base & bounds
+
+Las ventajas concretas son:
+
+- Cada segmento ocupa solo lo que necesita. No hay memoria reservada entre heap y stack.
+- Los huecos entre segmentos quedan libres y pueden ser asignados a otros procesos.
+- El heap y el stack pueden crecer de forma independiente sin afectarse mutuamente,
+  siempre que haya espacio físico disponible.
+- Múltiples procesos comparten mejor la RAM, ya que los segmentos pequeños encajan
+  más fácilmente en los huecos disponibles.
+
+> La segmentación no elimina la fragmentación externa (los huecos entre segmentos siguen
+> existiendo), pero sí elimina casi por completo la fragmentación interna que era
+> inevitable con base & bounds.
+
+### Punto 4: Fragmentación externa
+
+#### ¿Qué es la fragmentación externa?
+
+Es el fenómeno donde hay suficiente memoria libre en total para satisfacer una solicitud,
+pero esa memoria está dividida en huecos pequeños y dispersos, ninguno lo suficientemente
+grande de forma **contigua**. El espacio libre existe, pero no es utilizable.
+
+#### ¿Por qué surge con segmentación?
+
+Porque la segmentación sigue requiriendo que cada segmento ocupe un bloque contiguo
+de memoria física. A medida que los procesos se crean, crecen y terminan, dejan huecos
+de distintos tamaños repartidos por la RAM. Con el tiempo, esos huecos se vuelven
+demasiado pequeños para alojar nuevos segmentos.
+
+#### Diagrama: evolución de la fragmentación externa
+
+**Estado inicial — tres procesos en memoria:**
+```
+┌─────────────┐ 0x0000
+│   Proceso A │ 20KB
+├─────────────┤ 0x5000
+│   Proceso B │ 30KB
+├─────────────┤ 0xC800
+│   Proceso C │ 15KB
+├─────────────┤ 0x1000
+│    LIBRE    │ 35KB
+└─────────────┘ 0x1FFFF
+```
+
+**Proceso A y Proceso C terminan — dejan huecos:**
+```
+┌─────────────┐ 0x0000
+│    LIBRE    │ 20KB  ← hueco 1
+├─────────────┤ 0x5000
+│   Proceso B │ 30KB
+├─────────────┤ 0xC800
+│    LIBRE    │ 15KB  ← hueco 2
+├─────────────┤ 0x10000
+│    LIBRE    │ 35KB  ← hueco 3
+└─────────────┘ 0x1FFFF
+```
+
+**Nuevo proceso D necesita 60KB contiguos — FALLA:**
+```
+┌─────────────┐
+│    LIBRE    │ 20KB  ┐
+├─────────────┤       │
+│   Proceso B │ 30KB  │  Libre total = 70KB 
+├─────────────┤       │  Pero ningún bloque
+│    LIBRE    │ 15KB  │  contiguo >= 60KB   
+├─────────────┤       │
+│    LIBRE    │ 35KB  ┘
+└─────────────┘
+
+→ Proceso D no puede cargarse aunque haya memoria suficiente en total.
+  Esto es fragmentación externa.
+```
+
+#### Solución que adoptaron los SO modernos
+
+La fragmentación externa es el problema que motivó el desarrollo de la paginación:
+dividir la memoria en bloques de tamaño fijo (páginas) elimina los huecos de tamaño
+variable, ya que cualquier página libre puede usarse para cualquier proceso,
+independientemente de dónde esté ubicada físicamente.
+
+---
+
+# 5) Paginación
