@@ -1050,3 +1050,990 @@ independientemente de dónde esté ubicada físicamente.
 ---
 
 # 5) Paginación
+## Actividad 5.1: Cálculo de la tabla de páginas
+### Punto 1: Bits VPN y Bits offset:
+
+**Datos del sistema:**
+- Espacio virtual: 32 bits
+- Tamaño de página: 4KB = 2¹² bytes
+
+<img width="1493" height="423" alt="image" src="https://github.com/user-attachments/assets/d10687ec-4a2c-4bd8-b30d-bcab05ec115e" />
+
+**Estructura de la dirección virtual:**
+
+```
+┌──────────────────────────┬─────────────────┐
+│     VPN (20 bits)        │  Offset (12 bits)│
+│   bits [31 ... 12]       │  bits [11 ... 0] │
+└──────────────────────────┴─────────────────┘
+ ←────── 32 bits en total ──────────────────→
+```
+### Punto 2. Entradas tabla de pagina
+
+#### ¿Cuántas entradas tiene la tabla de páginas de un proceso?
+
+El número de entradas de la tabla de páginas equivale al número total de páginas
+virtuales posibles, que está determinado por el VPN de 20 bits:
+
+```
+Número de entradas = 2^(bits de VPN) = 2^20 = 1.048.576 entradas
+```
+
+Cada entrada corresponde a una página virtual distinta que el proceso podría tener
+mapeada. Con 20 bits de VPN hay exactamente 2²⁰ páginas virtuales posibles.
+
+### Punto 3: Espacio de tabla de pagina
+
+**¿Cuánto ocupa la tabla de páginas completa en memoria?**
+
+Cada entrada (PTE) ocupa 4 bytes según los datos del sistema:
+
+```
+Tamaño total = número de entradas × tamaño de PTE
+             = 2^20 × 4 bytes
+             = 4.194.304 bytes
+             = 4 MB
+```
+
+Esto significa que solo la tabla de páginas de un proceso ocupa 4MB de memoria
+
+**¿Es razonable?**
+
+No. 4MB por proceso es excesivo por varias razones:
+
+- En un sistema con 100 procesos activos simultáneos, solo las tablas de páginas
+  consumirían `100 × 4MB = 400MB` de RAM, sin contar el código ni los datos de
+  los procesos.
+- La mayoría de los procesos no usan ni remotamente las 2²⁰ páginas virtuales
+  disponibles, por lo que la mayor parte de la tabla contiene entradas inválidas
+  que desperdician memoria.
+- La tabla completa debe residir en memoria física para que la MMU pueda
+  consultarla en cada acceso.
+
+Por estas razones los SO modernos utilizan tablas de páginas multinivel, que
+solo reservan memoria para las partes de la tabla que realmente están en uso,
+reduciendo drásticamente el consumo en la mayoría de los casos.
+
+**Resumen:**
+
+| Parámetro | Valor |
+|---|---|
+| Bits de VPN | 20 bits |
+| Número de entradas | 2²⁰ = 1.048.576 |
+| Tamaño por entrada (PTE) | 4 bytes |
+| Tamaño total de la tabla | 4 MB |
+
+### Punto 4: Bits PFN
+
+<img width="1476" height="335" alt="image" src="https://github.com/user-attachments/assets/505a8063-ff3c-4263-9046-a2d57e6a6ef4" />
+
+**Estructura de la PTE (4 bytes = 32 bits):**
+
+```
+┌──────────────────────────────────────┬────────────────┐
+│        Bits de control (24 bits)     │  PFN (8 bits)  │
+│              bits [31..8]            │  bits [7..0]   │
+└──────────────────────────────────────┴────────────────┘
+ ←───────────────── 32 bits (4 bytes) ─────────────────→
+```
+
+Con solo 8 bits para el PFN y 32 bits totales en la PTE, quedan **24 bits disponibles**
+para bits de control. En la práctica los SO no usan todos; la mayoría quedan reservados
+para uso futuro.
+
+---
+
+### Bits de control y su función
+
+| Bit | Nombre | Función |
+|---|---|---|
+| **V** | Valid / Present | Indica si la página está cargada en RAM. Si es 0, cualquier acceso genera un **page fault** y el SO debe cargar la página desde disco. |
+| **R/W** | Read/Write | Define los permisos de acceso. Si es 0 la página es solo lectura; intentar escribir genera una excepción de protección. |
+| **U/S** | User/Supervisor | Indica si la página es accesible desde modo usuario o solo desde modo kernel. Protege las páginas del SO frente a los procesos. |
+| **D** | Dirty | Se activa cuando la página ha sido **modificada** desde que se cargó. El SO lo usa para saber si debe escribir la página a disco antes de desalojarla. |
+| **A** | Accessed | Se activa cuando la página ha sido leída o escrita recientemente. El SO lo usa para los algoritmos de reemplazo de páginas (ej: LRU aproximado). |
+
+> Estos bits de control son la razón por la que el tamaño de la PTE es de 4 bytes
+> y no simplemente 1 byte para el PFN. La información de protección y estado que
+> almacenan es esencial para que el SO gestione correctamente la memoria virtual.
+
+## Actividad 5.3: Simulador — Analisis
+### Punto 1: Compilar y ejecutar
+<img width="762" height="306" alt="image" src="https://github.com/user-attachments/assets/84a8eaa8-0e4b-45fa-9858-668463596bfc" />
+
+### Punto 2: ¿Qué ocurre con VA=0x10 y VA=0xA3?
+**VA = 0x10 → PAGE FAULT**
+
+```
+VA = 0x10 = 0001 0000
+VPN   = 1
+Offset  = 0
+
+page_table[1] = -1  →  página no presente  →  PAGE FAULT
+```
+
+La página virtual 1 no tiene marco físico asignado. No está en RAM.
+
+**VA = 0xA3 → traducción exitosa**
+
+```
+VA = 0xA3 = 1010 0011
+VPN    = 10
+Offset = 3
+
+page_table[10] = 4  →  PFN = 4
+PA =  0x43
+```
+
+La página virtual 10 sí tiene marco físico asignado (PFN=4), por lo que la traducción
+se completa normalmente con PA=0x43.
+
+---
+
+### ¿Qué haría el SO real ante un page fault?
+
+Cuando ocurre un page fault el hardware detecta que el bit **Valid=0** en la PTE y
+transfiere el control al SO mediante una interrupción. El SO sigue estos pasos:
+
+**1. Verificar si el acceso es legítimo:**
+si la VA no pertenece al espacio válido del proceso, el SO termina el proceso con
+una señal `SIGSEGV`. Si sí es válida, continúa.
+
+**2. Encontrar un marco físico libre:**
+el SO busca un marco disponible en RAM. Si no hay ninguno libre, aplica un
+**algoritmo de reemplazo de páginas** (LRU, Clock, etc.) para desalojar una página
+existente y liberar su marco.
+
+**3. Escribir la página desalojada a disco (si es necesario):**
+si el bit **Dirty=1** de la página desalojada está activo, el SO escribe su contenido
+al área de swap en disco antes de liberar el marco.
+
+**4. Cargar la página faltante desde disco:**
+el SO carga la página solicitada desde el archivo de swap o desde el ejecutable
+al marco físico recién liberado.
+
+**5. Actualizar la tabla de páginas:**
+se actualiza la PTE de la página faltante con el nuevo PFN y se activa el bit
+Valid=1.
+
+**6. Reanudar el proceso:**
+el SO devuelve el control al proceso, que reintenta la instrucción que causó el
+page fault, esta vez con éxito.
+
+```
+Proceso accede a VA=0x10
+        │
+        ▼
+  MMU consulta PTE → Valid=0
+        │
+        ▼
+  Interrupción → SO toma control
+        │
+        ▼
+  ¿Acceso válido? ── No ──→ SIGSEGV → proceso terminado
+        │
+       Sí
+        │
+        ▼
+  Buscar marco libre en RAM
+        │
+        ▼
+  Cargar página desde disco → marco físico
+        │
+        ▼
+  Actualizar PTE (PFN + Valid=1)
+        │
+        ▼
+  Reanudar proceso → reintenta acceso → éxito
+```
+### Punto 3: ¿Cuántos accesos a memoria física requiere un Load con tabla de páginas de un nivel?
+
+Una instrucción `load` con paginación de un solo nivel requiere 2 accesos a memoria física:
+
+```
+Instrucción: LOAD R1, VA
+
+Acceso 1: consultar la tabla de páginas en RAM
+          VA → VPN → índice en page_table → obtener PFN
+
+Acceso 2: acceder al dato real en RAM
+          PA = (PFN << PAGE_BITS) | offset → leer el dato
+```
+
+Sin paginación, el mismo `load` requeriría solo 1 acceso. La tabla de páginas
+duplica el costo de cada operación de memoria.
+
+**¿Por qué es costoso?**
+
+En un procesador moderno que ejecuta cientos de millones de instrucciones por segundo,
+cada acceso a RAM toma entre 50 y 100 nanosegundos. Duplicar ese costo en cada
+instrucción que accede a memoria representa una degradación de rendimiento inaceptable.
+El problema se agrava con tablas multinivel:
+
+| Niveles de tabla | Accesos a memoria por Load |
+|---|---|
+| Sin paginación | 1 |
+| 1 nivel | 2 |
+| 2 niveles | 3 |
+| 3 niveles | 4 |
+
+---
+
+### Solución de hardware: TLB (Translation Lookaside Buffer)
+
+La solución es una caché de traducciones integrada directamente en la MMU llamada
+TLB (Translation Lookaside Buffer). Almacena las traducciones VPN → PFN usadas
+recientemente para evitar consultar la tabla de páginas en RAM.
+
+**Funcionamiento:**
+
+```
+Proceso accede a VA
+        │
+        ▼
+  MMU busca VPN en TLB
+        │
+   ┌────┴────┐
+   │         │
+TLB Hit   TLB Miss
+   │         │
+   ▼         ▼
+PFN directo  Consulta RAM    ← 1 acceso extra
+desde TLB    (page table)
+   │         │
+   └────┬────┘
+        ▼
+  Acceder al dato en RAM    ← 1 acceso
+```
+
+- **TLB Hit:** solo 1 acceso a RAM (el dato). La traducción sale de la caché.
+- **TLB Miss:** 2 accesos a RAM (tabla de páginas + dato). La traducción nueva
+  se guarda en la TLB para futuros accesos.
+
+**¿Por qué funciona bien en la práctica?**
+
+Los programas exhiben localidad de referencia: tienden a acceder repetidamente
+a las mismas páginas en períodos cortos de tiempo. Una TLB de apenas 64 a 1024
+entradas logra tasas de acierto (*hit rate*) superiores al 99%, haciendo que el
+costo promedio de traducción sea casi igual al de un sistema sin paginación.
+
+### Punto 4: ¿Qué ventaja tiene la paginación sobre la segmentación en cuanto a fragmentación?
+
+La ventaja principal es que la paginación elimina la fragmentación externa a costa
+de introducir una fragmentación interna mínima y controlada.
+
+**¿Por qué la segmentación sufre fragmentación externa?**
+
+Los segmentos tienen tamaño variable. A medida que los procesos entran y salen de
+memoria, quedan huecos de distintos tamaños que no siempre pueden ser aprovechados
+por nuevos segmentos.
+
+```
+RAM con segmentación (tamaño variable):
+
+┌─────────────┐
+│  Segmento A │ 18KB
+├─────────────┤
+│    LIBRE    │ 5KB   ← demasiado pequeño para un segmento de 8KB
+├─────────────┤
+│  Segmento B │ 30KB
+├─────────────┤
+│    LIBRE    │ 6KB   ← demasiado pequeño para un segmento de 8KB
+├─────────────┤
+│  Segmento C │ 20KB
+└─────────────┘
+Libre total: 11KB, pero ningún hueco admite un segmento de 8KB 
+```
+
+**¿Por qué la paginación elimina la fragmentación externa?**
+
+Todos los marcos físicos tienen el **mismo tamaño fijo**. Cualquier marco libre puede
+alojar cualquier página de cualquier proceso, sin importar dónde esté ubicado en RAM.
+No existen huecos inutilizables.
+
+```
+RAM con paginación (marcos de tamaño fijo):
+
+┌─────────────┐
+│  Marco  0   │ 16B  → Proceso A, página 2
+├─────────────┤
+│  Marco  1   │ 16B  → LIBRE   puede alojar cualquier página
+├─────────────┤
+│  Marco  2   │ 16B  → Proceso B, página 0
+├─────────────┤
+│  Marco  3   │ 16B  → LIBRE   puede alojar cualquier página
+├─────────────┤
+│  Marco  4   │ 16B  → Proceso A, página 0
+└─────────────┘
+Cualquier marco libre es aprovechable al 100% 
+```
+
+**¿Qué es la fragmentación interna que introduce la paginación?**
+
+Si un proceso no usa completamente la última página asignada, el espacio sobrante
+dentro de esa página se desperdicia. Sin embargo este desperdicio es acotado:
+
+```
+Proceso necesita: 4KB + 1 byte
+Páginas asignadas: 2 páginas = 8KB
+Desperdicio: 8KB - (4KB + 1 byte) = 4095 bytes por proceso ← peor caso 
+```
+
+Es un costo pequeño y predecible, muy inferior al desperdicio impredecible que
+genera la fragmentación externa de la segmentación.
+
+---
+
+**Comparación directa:**
+
+| Fenómeno | Segmentación | Paginación |
+|---|---|---|
+| Fragmentación externa |  Sí, severa e impredecible |  No existe |
+| Fragmentación interna |  No existe |  Sí, pero mínima y acotada |
+| Aprovechamiento de huecos | Parcial (depende del tamaño) | Total (cualquier marco sirve) |
+
+> La eliminación de la fragmentación externa es la razón principal por la que los
+> SO modernos adoptaron la paginación como mecanismo base de gestión de memoria,
+> combinándola con segmentación en algunos casos (ej: x86 en modo protegido) para
+> aprovechar las ventajas de ambos esquemas.
+
+---
+
+# 6: Gestión de espacio libre
+## Actividad 6.1: Simulación de estrategias de asignación
+### Punto 1: First Fit
+
+**Regla:** se asigna el primer bloque de la lista libre que sea suficientemente grande.
+
+**Lista libre inicial:**
+
+| Dirección | Tamaño |
+|---|---|
+| 0x0100 | 100 bytes |
+| 0x0200 | 500 bytes |
+| 0x0400 | 200 bytes |
+| 0x0500 | 300 bytes |
+| 0x0700 | 600 bytes |
+
+---
+
+**malloc(212):**
+```
+0x0100: 100 < 212 NO
+0x0200: 500 >= 212 SI → asigna en 0x0200, remainder = 500 - 212 = 288 bytes
+```
+
+**malloc(417):**
+```
+0x0100: 100 < 417 NO
+0x0200: 288 < 417 NO
+0x0400: 200 < 417 NO
+0x0500: 300 < 417 NO
+0x0700: 600 >= 417 SI → asigna en 0x0700, remainder = 600 - 417 = 183 bytes
+```
+
+**malloc(98):**
+```
+0x0100: 100 >= 98 SI → asigna en 0x0100, remainder = 100 - 98 = 2 bytes
+```
+
+**malloc(426):**
+```
+0x0100:   2 < 426 NO
+0x0200: 288 < 426 NO
+0x0400: 200 < 426 NO
+0x0500: 300 < 426 NO
+0x0700: 183 < 426 NO
+→ FALLA: no existe bloque suficientemente grande
+```
+
+---
+
+**Lista libre resultante tras las 4 solicitudes:**
+
+| Dirección | Tamaño | Observación |
+|---|---|---|
+| 0x0100 | 2 bytes | remainder de malloc(98) |
+| 0x02D4 | 288 bytes | remainder de malloc(212) |
+| 0x0400 | 200 bytes | sin cambios |
+| 0x0500 | 300 bytes | sin cambios |
+| 0x07B1 | 183 bytes | remainder de malloc(417) |
+
+> **malloc(426) falla** porque ningún bloque libre disponible es suficientemente
+> grande, a pesar de que la memoria libre total es 2+288+200+300+183 = **973 bytes**.
+> Esto ilustra cómo First Fit puede generar fragmentación externa que impide
+> satisfacer solicitudes aunque haya memoria libre suficiente en total.
+
+### Punto 2: Best Fit
+
+**Regla:** se asigna el bloque más pequeño que sea suficientemente grande,
+minimizando el desperdicio en cada asignación.
+
+---
+
+**malloc(212):**
+```
+0x0100: 100 < 212 NO
+0x0200: 500 >= 212 SI desperdicio = 288
+0x0400: 200 < 212 NO
+0x0500: 300 >= 212 SI desperdicio =  88 ← mejor ajuste
+0x0700: 600 >= 212 SI desperdicio = 388
+
+→ asigna en 0x0500, remainder = 88 bytes
+```
+
+**malloc(417):**
+```
+0x0100: 100 < 417 NO
+0x0200: 500 >= 417 SI desperdicio =  83 ← mejor ajuste
+0x0400: 200 < 417 NO
+0x0500:  88 < 417 NO
+0x0700: 600 >= 417 SI desperdicio = 183
+
+→ asigna en 0x0200, remainder = 83 bytes
+```
+
+**malloc(98):**
+```
+0x0100: 100 >= 98 SI desperdicio =   2 ← mejor ajuste
+0x0200:  83 < 98  NO
+0x0400: 200 >= 98 SI desperdicio = 102
+0x0500:  88 < 98  NO
+0x0700: 600 >= 98 SI desperdicio = 502
+
+→ asigna en 0x0100, remainder = 2 bytes
+```
+
+**malloc(426):**
+```
+0x0100:   2 < 426 NO
+0x0200:  83 < 426 NO
+0x0400: 200 < 426 NO
+0x0500:  88 < 426 NO
+0x0700: 600 >= 426 SI desperdicio = 174 ← único candidato
+
+→ asigna en 0x0700, remainder = 174 bytes SI
+```
+
+---
+
+**Lista libre resultante tras las 4 solicitudes:**
+
+| Dirección | Tamaño | Observación |
+|---|---|---|
+| 0x0100 | 2 bytes | remainder de malloc(98) |
+| 0x02A1 | 83 bytes | remainder de malloc(417) |
+| 0x0400 | 200 bytes | sin cambios |
+| 0x0512 | 88 bytes | remainder de malloc(212) |
+| 0x07B2 | 174 bytes | remainder de malloc(426) |
+
+---
+
+### ¿Cambia el resultado frente a First Fit?
+
+Sí, y de forma significativa:
+
+| Solicitud | First Fit | Best Fit |
+|---|---|---|
+| malloc(212) | 0x0200 (500B) | 0x0500 (300B) |
+| malloc(417) | 0x0700 (600B) | 0x0200 (500B) |
+| malloc(98)  | 0x0100 (100B) | 0x0100 (100B) |
+| malloc(426) |  FALLA       |  0x0700 (600B) |
+
+Best Fit logra satisfacer malloc(426) donde First Fit fallaba, porque al asignar
+malloc(212) en el bloque de 300 bytes (en lugar del de 500), conserva el bloque
+de 600 bytes intacto y disponible para la solicitud más grande.
+
+Sin embargo, Best Fit no siempre es superior: al intentar minimizar el desperdicio
+por asignación, tiende a generar muchos remanentes muy pequeños (como los 83
+y 88 bytes del ejemplo) que son difíciles de reutilizar, contribuyendo a la
+fragmentación externa a largo plazo.
+
+### Punto 3: ¿Cuál estrategia genera más fragmentación externa?
+
+Comparando los remanentes que dejó cada estrategia:
+
+| Dirección | First Fit | Best Fit |
+|---|---|---|
+| 0x0100 | 2 bytes | 2 bytes |
+| 0x0200 | 288 bytes | 83 bytes |
+| 0x0400 | 200 bytes | 200 bytes |
+| 0x0500 | 300 bytes | 88 bytes |
+| 0x0700 | 183 bytes | 174 bytes |
+| **Total libre** | **973 bytes** | **547 bytes** |
+| **Bloques útiles (>= 212B)** | 0x0500: 300B | 0x0400: 200B |
+| **malloc(426) satisfecho** |  No |  Sí |
+
+**¿Cuál genera más fragmentación externa?**
+
+**First Fit** genera más fragmentación externa en este caso. Aunque deja más memoria
+libre en total (973 bytes vs 547 bytes), esa memoria está distribuida en bloques
+que no son suficientemente grandes para satisfacer malloc(426). Tener mucha memoria
+libre pero inutilizable es precisamente la definición de fragmentación externa.
+
+**¿Cuál la minimiza?**
+
+**Best Fit** la minimiza en este caso concreto. Al elegir siempre el bloque con
+menor desperdicio, preservó el bloque más grande (0x0700: 600B) disponible para
+la solicitud más exigente, logrando satisfacer las 4 solicitudes.
+
+Sin embargo, esta conclusión no es universal:
+
+| Estrategia | Ventaja | Desventaja |
+|---|---|---|
+| **First Fit** | Rápido, preserva bloques grandes al final | Fragmenta el inicio de la lista |
+| **Best Fit** | Minimiza desperdicio por asignación | Genera remanentes muy pequeños e inútiles a largo plazo |
+| **Worst Fit** | Deja remanentes grandes y reutilizables | Destruye los bloques grandes rápidamente |
+| **Next Fit** | Distribuye la fragmentación uniformemente | Similar a First Fit en fragmentación |
+
+> En general, ninguna estrategia es óptima para todos los casos. La elección
+> depende del patrón de solicitudes del sistema. En la práctica, **First Fit**
+> suele ser preferido por su velocidad y comportamiento aceptable en la mayoría
+> de escenarios reales.
+
+### Punto 4: ¿Qué es el Coalescing?
+
+El coalescing (o coalescencia) es el proceso de fusionar bloques libres adyacentes
+en memoria en un único bloque más grande cuando se libera memoria. Lo realiza el gestor
+del heap automáticamente al ejecutar `free()`, revisando si los bloques vecinos también
+están libres para combinarlos.
+
+Sin coalescing, bloques libres contiguos permanecen separados en la lista libre y no
+pueden satisfacer solicitudes que cabrían en su espacio combinado.
+
+
+#### Caso ilustrado: malloc(250) falla sin coalescing
+
+**Situación inicial: tres bloques fueron liberados en posiciones contiguas**
+
+```
+Dirección   Tamaño    Estado
+┌─────────────────────────────┐
+│ 0x0100    100 bytes  LIBRE  │
+├─────────────────────────────┤
+│ 0x0164    80 bytes   LIBRE  │
+├─────────────────────────────┤
+│ 0x01B4    120 bytes  LIBRE  │
+├─────────────────────────────┤
+│ 0x0234    400 bytes  EN USO │
+└─────────────────────────────┘
+Memoria libre total: 100 + 80 + 120 = 300 bytes
+```
+
+**Sin coalescing → malloc(250) FALLA:**
+
+```
+Lista libre:
+  [0x0100: 100B] → [0x0164: 80B] → [0x01B4: 120B]
+
+malloc(250):
+  0x0100: 100 < 250 NO
+  0x0164:  80 < 250 NO
+  0x01B4: 120 < 250 NO
+  → FALLA: ningún bloque individual alcanza 250 bytes
+    aunque hay 300 bytes libres en total 
+```
+
+**Con coalescing → malloc(250) ÉXITO:**
+
+```
+Al liberar los bloques, el gestor detecta vecinos libres y los fusiona:
+
+0x0100 (100B) + 0x0164 (80B) + 0x01B4 (120B)
+─────────────────────────────────────────────
+        0x0100: 300 bytes LIBRE  
+
+Lista libre:
+  [0x0100: 300B]
+
+malloc(250):
+  0x0100: 300 >= 250 SI → asigna en 0x0100, remainder = 50 bytes 
+```
+
+**Visualmente:**
+
+```
+Sin coalescing:                   Con coalescing:
+
+┌─────────────────┐               ┌─────────────────┐
+│ 0x0100  100B    │ LIBRE  ┐      │                 │
+├─────────────────┤        │      │ 0x0100  300B    │ LIBRE
+│ 0x0164   80B    │ LIBRE  ├─────▶│                 │
+├─────────────────┤        │      │                 │
+│ 0x01B4  120B    │ LIBRE  ┘      ├─────────────────┤
+├─────────────────┤               │ 0x0234  400B    │ EN USO
+│ 0x0234  400B    │ EN USO        └─────────────────┘
+└─────────────────┘
+malloc(250)                     malloc(250) 
+```
+
+> El coalescing es una técnica fundamental en todo gestor de heap moderno.
+> Su ausencia convierte la fragmentación externa en un problema irreversible:
+> la memoria se divide en fragmentos cada vez más pequeños que nunca pueden
+> volver a combinarse, degradando el rendimiento del sistema con el tiempo.
+
+### Punto 5: ¿Qué es la fragmentación interna?
+
+La fragmentación interna ocurre cuando se asigna a un proceso más memoria de la
+que realmente necesita, y el espacio sobrante dentro del bloque asignado queda
+desperdiciado e inutilizable por cualquier otro proceso.
+
+A diferencia de la fragmentación externa (huecos entre bloques), la fragmentación
+interna es desperdicio dentro de un bloque ya asignado:
+
+```
+Bloque asignado: 256 bytes
+Dato almacenado: 200 bytes
+                 ┌──────────────────────────────────────┐
+                 │▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░│
+                 │◄─── 200B usado ──►◄─── 56B perdido ──►
+                 └──────────────────────────────────────┘
+                 El proceso "dueño" del bloque no usa los 56B,
+                 pero ningún otro proceso puede usarlos tampoco.
+```
+
+---
+
+#### ¿Qué es un Slab Allocator?
+
+El slab allocator es un gestor de memoria usado principalmente en kernels de SO
+(Linux lo usa desde 1994). En lugar de asignar memoria de tamaño arbitrario, pre-divide
+la memoria en slabs: colecciones de bloques de tamaño fijo diseñados para objetos
+específicos del kernel (inodos, descriptores de proceso, etc.).
+
+```
+Slab de inodos (cada objeto = 256 bytes):
+┌────────┬────────┬────────┬────────┬────────┐
+│ inodo  │ inodo  │ inodo  │  FREE  │  FREE  │
+│ 256B   │ 256B   │ 256B   │ 256B   │ 256B   │
+└────────┴────────┴────────┴────────┴────────┘
+
+Slab de PCBs (cada objeto = 512 bytes):
+┌────────┬────────┬────────┬────────┐
+│  PCB   │  PCB   │  FREE  │  FREE  │
+│ 512B   │ 512B   │ 512B   │ 512B   │
+└────────┴────────┴────────┴────────┘
+```
+
+---
+
+#### ¿Cuándo aparece fragmentación interna en un Slab Allocator?
+
+El slab allocator casi elimina la fragmentación interna para los objetos que gestiona,
+pero aparece en dos situaciones típicas:
+
+**1. El objeto no llena completamente su slot:**
+
+Si el slab fue diseñado para objetos de 256 bytes pero el objeto real ocupa 200 bytes,
+los 56 bytes restantes de cada slot se desperdician:
+
+```
+Slot del slab: 256 bytes fijos
+               ┌─────────────────────┬───────────┐
+               │   objeto: 200B      │  56B lost │
+               └─────────────────────┴───────────┘
+                                      ↑
+                              fragmentación interna
+Con 1000 objetos: 56 × 1000 = 56.000 bytes desperdiciados
+```
+
+**2. Alineación de memoria:**
+
+El slab allocator alinea los objetos a fronteras de memoria (4, 8 o 16 bytes) para
+que la CPU pueda accederlos eficientemente. Si un objeto tiene un tamaño que no es
+múltiplo de la alineación requerida, se añaden bytes de padding:
+
+```
+Objeto real:    52 bytes
+Alineación:      8 bytes
+Slot asignado:  56 bytes  (próximo múltiplo de 8)
+Padding:         4 bytes  ← fragmentación interna por alineación
+
+┌──────────────────────────┬────────┐
+│      objeto: 52B         │ pad 4B │
+└──────────────────────────┴────────┘
+```
+
+---
+
+#### Comparación: fragmentación interna vs externa
+
+| Característica | Fragmentación Interna | Fragmentación Externa |
+|---|---|---|
+| Ubicación | Dentro del bloque asignado | Entre bloques libres |
+| Causa | Tamaño fijo mayor al necesario | Bloques libres dispersos |
+| Afecta a | El proceso asignado | Nuevas solicitudes |
+| Solución | Tamaños de slot más ajustados | Coalescing, compactación |
+| Presente en | Paginación, slab allocator | Segmentación, first/best fit |
+
+> El slab allocator acepta una pequeña fragmentación interna por alineación como
+> un compromiso razonable a cambio de eliminar casi por completo la fragmentación
+> externa y acelerar drásticamente la asignación de objetos frecuentes del kernel.
+
+## Actividad 6.2: Fragmentación
+<img width="1113" height="392" alt="image" src="https://github.com/user-attachments/assets/bd6de000-7085-44c4-a8b7-718126802c1f" />
+
+## Actividad 6.3: Fragmentacióon en glibc — Análisis
+### Punto 1: ¿Son consecutivas las direcciones? ¿Qué patrón de separación se observa?
+
+**Direcciones asignadas:**
+
+| Índice | Tamaño | Dirección | Separación con el siguiente |
+|---|---|---|---|
+| 0 | 16B   | 0x5577476812a0 | 0x430 (1072B) |
+| 1 | 32B   | 0x5577476816d0 | 0x030 (48B)   |
+| 2 | 64B   | 0x557747681700 | 0x050 (80B)   |
+| 3 | 128B  | 0x557747681750 | 0x090 (144B)  |
+| 4 | 256B  | 0x5577476817e0 | 0x110 (272B)  |
+| 5 | 512B  | 0x5577476818f0 | 0x210 (528B)  |
+| 6 | 1024B | 0x557747681b00 | 0x410 (1040B) |
+| 7 | 512B  | 0x557747681f10 | 0x210 (528B)  |
+| 8 | 256B  | 0x557747682120 | 0x110 (272B)  |
+| 9 | 128B  | 0x557747682230 | —             |
+
+**¿Son consecutivas?**
+
+No exactamente. Los bloques están ordenados secuencialmente en memoria (cada dirección
+es mayor que la anterior), pero no son estrictamente consecutivas: entre cada bloque
+hay una separación mayor al tamaño solicitado.
+
+**Patrón observado:**
+
+La separación entre bloques es siempre tamaño solicitado + 16 bytes:
+
+```
+Bloque de  32B → separación =  32 + 16 =  48B (0x030) 
+Bloque de  64B → separación =  64 + 16 =  80B (0x050) 
+Bloque de 128B → separación = 128 + 16 = 144B (0x090) 
+Bloque de 256B → separación = 256 + 16 = 272B (0x110) 
+Bloque de 512B → separación = 512 + 16 = 528B (0x210) 
+```
+
+Esos 16 bytes extra corresponden al header de gestión que `malloc` antepone
+a cada bloque para almacenar metadatos internos del heap (tamaño del bloque, flags
+de estado, punteros de la lista libre). El usuario nunca los ve, pero siempre están:
+
+```
+Memoria física real por cada malloc(N):
+
+┌──────────────────┬──────────────────────────┐
+│  Header: 16B     │  Datos del usuario: N B  │
+│  (metadata)      │  ← dirección retornada   │
+└──────────────────┴──────────────────────────┘
+ ←──────────── N + 16 bytes en total ─────────►
+```
+
+> El patrón confirma que el heap de Linux (glibc) usa un overhead fijo de 16 bytes
+> por bloque para su gestión interna, independientemente del tamaño solicitado.
+> Esto es un ejemplo de fragmentación interna introducida por el propio gestor de
+> memoria, no por el programa del usuario.
+
+### Punto 2: ¿Tiene éxito la asignación de 1500 bytes?
+
+**Sí, tiene éxito:**
+```
+malloc(1500) -> 0x5577476822c0 [exito]
+```
+
+#### ¿Por qué tuvo éxito si se liberaron bloques alternos creando huecos?
+
+Al liberar los índices pares se liberaron estos bloques:
+
+| Índice | Tamaño liberado |
+|---|---|
+| 0 | 16B   |
+| 2 | 64B   |
+| 4 | 256B  |
+| 6 | 1024B |
+| 8 | 256B  |
+| **Total** | **1616B** |
+
+En teoría, con 1616 bytes liberados repartidos en 5 huecos separados por bloques
+ocupados, una solicitud de 1500 bytes debería fallar por fragmentación externa.
+Sin embargo tuvo éxito por dos razones:
+
+**Razón 1: El heap puede crecer**
+
+Cuando `malloc` no encuentra un hueco suficientemente grande en los bloques
+existentes, no falla inmediatamente. En su lugar solicita más memoria al SO
+mediante `sbrk()` o `mmap()`, expandiendo el heap hacia direcciones más altas.
+La dirección retornada `0x5577476822c0` es más alta que todas las anteriores,
+lo que confirma que `malloc` obtuvo memoria nueva del SO en lugar de reutilizar
+los huecos:
+
+```
+Última dirección asignada:  0x557747682230  (índice 9, 128B)
+Dirección de malloc(1500):  0x5577476822c0  ← justo después, heap expandido
+```
+
+**Razón 2: El coalescing del heap de glibc**
+
+El gestor de memoria de glibc aplica coalescing automático al hacer `free()`.
+Si alguno de los bloques liberados era adyacente a otro bloque libre, los fusiona.
+En este caso los huecos no eran adyacentes entre sí (están separados por bloques
+ocupados de índices impares), por lo que el coalescing no pudo formar un bloque
+de 1500B a partir de los huecos existentes.
+
+```
+Estado del heap tras liberar índices pares:
+
+┌──────────┬──────────┬──────────┬──────────┬──────────┐
+│ LIBRE    │ idx 1    │ LIBRE    │ idx 3    │ LIBRE    │ ...
+│ 16B  [0] │ 32B  [1] │ 64B  [2] │ 128B [3] │ 256B [4] │
+└──────────┴──────────┴──────────┴──────────┴──────────┘
+     ↑           ↑          ↑
+  huecos separados por bloques ocupados → no se pueden fusionar
+  ningún hueco individual >= 1500B → heap se expande
+```
+
+---
+
+#### Conclusión en términos de fragmentación
+
+| Situación | Resultado |
+|---|---|
+| Memoria libre total tras liberar pares | 1616B |
+| Bloque contiguo libre más grande | 1024B (índice 6) |
+| Solicitud de 1500B satisfecha con huecos |  Imposible |
+| Solicitud satisfecha expandiendo el heap |  Éxito |
+
+Este resultado ilustra perfectamente la fragmentación externa: había 1616 bytes
+libres en total, más que suficientes para 1500 bytes, pero dispersos en huecos
+separados por bloques ocupados. El sistema tuvo que consumir memoria nueva del SO
+en lugar de reutilizar la memoria ya liberada, aumentando innecesariamente el
+consumo de RAM del proceso.
+
+### Punto 3: Diferencia entre el allocator de usuario y el del kernel
+
+#### Los dos niveles de gestión de memoria
+
+```
+┌─────────────────────────────────────────────────────┐
+│                  ESPACIO DE USUARIO                  │
+│                                                      │
+│   Programa C                                         │
+│   malloc(256) ──► glibc allocator                   │
+│                   (first fit / best fit / bins)      │
+│                        │                            │
+│                        │ sbrk() / mmap()            │
+│                        ▼                            │
+├─────────────────────────────────────────────────────┤
+│                   ESPACIO DE KERNEL                  │
+│                                                      │
+│            Buddy System  ◄──── páginas físicas       │
+│                 │                                    │
+│                 ▼                                    │
+│            Slab Allocator ◄─── objetos del kernel    │
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Allocator de usuario: malloc / glibc
+
+Gestiona memoria **dentro del heap del proceso**. Cuando el proceso necesita más
+heap, pide páginas al kernel mediante `sbrk()` o `mmap()`, y luego las subdivide
+internamente para satisfacer solicitudes de tamaño arbitrario.
+
+| Característica | Detalle |
+|---|---|
+| Ubicación | Espacio de usuario |
+| Granularidad | Bytes arbitrarios (1B, 17B, 1500B...) |
+| Algoritmos | First fit, best fit, bins por tamaño (glibc usa tcmalloc-style bins) |
+| Overhead | 16 bytes de header por bloque |
+| Interacción con SO | Solo al crecer/reducir el heap (sbrk/mmap) |
+| Velocidad | Muy rápido (no hay cambio de modo) |
+| Fragmentación | Externa e interna posibles |
+
+---
+
+#### Allocator de kernel: Buddy System + Slab
+
+El kernel también necesita memoria dinámica para sus propias estructuras internas
+(inodos, PCBs, descriptores de archivo, etc.), pero no puede usar `malloc` porque
+ese vive en espacio de usuario.
+
+**Buddy System:** gestiona páginas físicas completas
+
+Divide la memoria en bloques de potencias de 2 (1, 2, 4, 8... páginas). Cuando
+se libera un bloque, busca su "buddy" (bloque adyacente del mismo tamaño) y los
+fusiona automáticamente:
+
+```
+Memoria física: 16 páginas
+
+Solicitud de 3 páginas → asigna bloque de 4 (potencia de 2):
+┌────┬────┬────┬────┬────────┬────────────────┐
+│ En │ En │ En │    │        │                │
+│ uso│ uso│ uso│free│  free  │      free      │
+│ 1P │ 1P │ 1P │ 1P │   2P   │      8P        │
+└────┴────┴────┴────┴────────┴────────────────┘
+                 ↑
+         fragmentación interna (1 página desperdiciada)
+```
+
+**Slab Allocator:** gestiona objetos pequeños y frecuentes del kernel
+
+Toma páginas del buddy system y las subdivide en slots del tamaño exacto de
+objetos específicos, eliminando la fragmentación externa para esos objetos:
+
+```
+Slab de inodos (256B cada uno):
+┌─────────┬─────────┬─────────┬─────────┬─────────┐
+│ inodo   │ inodo   │  FREE   │ inodo   │  FREE   │
+│ 256B    │ 256B    │ 256B    │ 256B    │ 256B    │
+└─────────┴─────────┴─────────┴─────────┴─────────┘
+  en uso    en uso              en uso
+```
+
+| Característica | Buddy System | Slab Allocator |
+|---|---|---|
+| Gestiona | Páginas físicas | Objetos del kernel |
+| Granularidad | Potencias de 2 en páginas | Tamaño fijo por tipo de objeto |
+| Fragmentación | Interna (redondeo a potencia de 2) | Mínima |
+| Coalescing | Automático con buddy adyacente | No necesario (slots fijos) |
+| Velocidad | Rápido | Muy rápido (slots preasignados) |
+
+---
+
+### ¿Por qué existen dos niveles?
+
+Porque el kernel y los procesos de usuario tienen necesidades radicalmente distintas:
+
+**1. Protección y aislamiento:**
+el kernel no puede confiar en el allocator del usuario. Si un proceso corrompe
+su heap, el kernel debe seguir funcionando. Tener su propio allocator garantiza
+que la memoria del kernel nunca es afectada por bugs en espacio de usuario.
+
+**2. Granularidad diferente:**
+el kernel trabaja con páginas físicas (4KB mínimo). Dárselas directamente a
+`malloc` sería un desperdicio enorme para objetos pequeños como un descriptor
+de archivo (unos pocos bytes). El slab allocator resuelve esto subdividiendo
+las páginas en objetos del tamaño exacto necesario.
+
+**3. Rendimiento:**
+una llamada al kernel (syscall) es costosa: implica cambio de modo usuario→kernel,
+guardado de contexto, validaciones de seguridad. Si `malloc` tuviera que hacer
+una syscall por cada asignación, el rendimiento sería catastrófico. Con dos
+niveles, `malloc` solo llama al kernel cuando necesita más páginas; el resto
+del tiempo opera completamente en espacio de usuario.
+
+**4. Especialización:**
+el slab allocator puede optimizar para patrones de uso conocidos del kernel
+(muchas asignaciones y liberaciones del mismo tipo de objeto), mientras que
+`malloc` debe ser de propósito general para cualquier programa de usuario.
+
+```
+Sin dos niveles:                  Con dos niveles:
+
+malloc(8) ──► syscall ──► kernel  malloc(8) ──► glibc (user space) 
+malloc(8) ──► syscall ──► kernel  malloc(8) ──► glibc (user space) 
+malloc(8) ──► syscall ──► kernel  malloc(8) ──► glibc (user space) 
+                                  glibc necesita más heap ──► syscall ──► kernel
+N syscalls para N mallocs         1 syscall para miles de mallocs
+```
+
+> Los dos niveles de gestión de memoria son un ejemplo del principio de separación
+> de responsabilidades: el kernel gestiona recursos físicos de forma segura y
+> eficiente, mientras que el allocator de usuario optimiza el uso de esos recursos
+> para los patrones de acceso de los programas.
