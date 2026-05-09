@@ -2037,3 +2037,535 @@ N syscalls para N mallocs         1 syscall para miles de mallocs
 > de responsabilidades: el kernel gestiona recursos físicos de forma segura y
 > eficiente, mientras que el allocator de usuario optimiza el uso de esos recursos
 > para los patrones de acceso de los programas.
+
+---
+
+# 7) TLBs — Translation Lookaside Buffer
+#### Tuve que agregarle una linea adicional al codigo debido a que me salia este error:
+<img width="666" height="125" alt="Captura de pantalla 2026-05-09 171748" src="https://github.com/user-attachments/assets/97c80216-5e21-47a0-bf8f-243ed48ba4e4" />
+
+#### Ese error aparece porque CLOCK_MONOTONIC y clock_gettime() son funciones POSIX y en algunos compiladores/configuraciones no se habilitan automáticamente.
+
+Añadí esta linea al principio:
+```c
+#define _POSIX_C_SOURCE 199309L
+```
+## Actividad 7.1: Localidad y TLB — Análisis
+### Punto 1: Comparación de acceso secuencial vs aleatorio
+<img width="1071" height="296" alt="image" src="https://github.com/user-attachments/assets/d4b17d63-4582-430d-9378-d0d4b2ff35e4" />
+
+**Resultados de las 3 ejecuciones:**
+
+| Ejecución | Secuencial (ms) | Aleatorio (ms) | Factor |
+|---|---|---|---|
+| 1 | 12.72 | 51.34 | 4.04x |
+| 2 | 12.27 | 52.09 | 4.25x |
+| 3 | 12.22 | 52.84 | 4.33x |
+| **Promedio** | **12.40** | **52.09** | **4.20x** |
+
+```
+Promedio secuencial = (12.72 + 12.27 + 12.22) / 3 = 12.40 ms
+Promedio aleatorio  = (51.34 + 52.09 + 52.84) / 3 = 52.09 ms
+Factor              = 52.09 / 12.40 = 4.20x más lento
+```
+
+El acceso aleatorio es aproximadamente **4.2 veces más lento** que el secuencial
+sobre el mismo arreglo de 16MB con los mismos datos.
+
+**¿Por qué existe esa diferencia?**
+
+Ambos accesos suman exactamente los mismos 4M enteros (confirmado por
+`sum=8796090925056` idéntico en todos los casos), por lo que la diferencia
+no es de cómputo sino puramente de **costo de acceso a memoria**:
+
+- **Secuencial:** cada página cargada en TLB sirve para los siguientes 1024
+  accesos consecutivos (página de 4KB / 4 bytes por entero). La TLB tiene
+  una tasa de acierto cercana al 100%.
+
+- **Aleatorio:** cada acceso salta a una página distinta e impredecible.
+  La TLB se llena rápidamente con entradas que no se volverán a usar,
+  generando **TLB misses** continuos que obligan a consultar la tabla de
+  páginas en RAM en cada acceso.
+
+```
+Acceso secuencial:          Acceso aleatorio:
+
+arr[0]  → TLB miss  →  carga página 0    arr[idx[0]] → TLB miss → carga página X
+arr[1]  → TLB hit                        arr[idx[1]] → TLB miss → carga página Y
+arr[2]  → TLB hit                        arr[idx[2]] → TLB miss → carga página Z
+arr[3]  → TLB hit                        arr[idx[3]] → TLB miss → carga página W
+...     → TLB hit    (×1022 más)       ...           → TLB miss → (casi siempre)
+
+1 miss cada ~1024 accesos              ~1 miss por cada acceso
+```
+### Punto 2. Explicación con el modelo TLB
+
+### ¿Qué es el TLB y cómo funciona?
+
+El TLB (Translation Lookaside Buffer) es una caché de traducciones de direcciones
+integrada en la MMU. Guarda las últimas traducciones VPN → PFN para evitar consultar
+la tabla de páginas en RAM en cada acceso a memoria.
+
+```
+CPU solicita dirección virtual VA
+            │
+            ▼
+      MMU busca VPN en TLB
+            │
+     ┌──────┴──────┐
+     │             │
+  TLB Hit       TLB Miss
+     │             │
+     ▼             ▼
+  PFN directo   Consulta tabla    ← acceso extra a RAM (costoso)
+  desde TLB     de páginas en RAM
+     │             │
+     └──────┬──────┘
+            ▼
+      Accede al dato en RAM
+```
+
+---
+
+### Caso 1: Acceso secuencial — TLB hit rate alto
+
+El arreglo ocupa 16MB. Con páginas de 4KB y enteros de 4 bytes, cada página
+contiene **1024 enteros consecutivos**. Al recorrer el arreglo en orden:
+
+```
+Acceso a arr[0]    → TLB miss → carga traducción de página 0
+Acceso a arr[1]    → TLB hit   (misma página)
+Acceso a arr[2]    → TLB hit   (misma página)
+...
+Acceso a arr[1023] → TLB hit   (misma página)
+Acceso a arr[1024] → TLB miss → carga traducción de página 1
+Acceso a arr[1025] → TLB hit   (misma página)
+...
+```
+
+```
+Total páginas del arreglo = 16MB / 4KB = 4096 páginas
+Total accesos             = 4.194.304
+TLB misses                ≈ 4.096  (1 por página)
+TLB hits                  ≈ 4.190.208
+
+Hit rate ≈ 4.190.208 / 4.194.304 ≈ 99.9% 
+```
+
+---
+
+### Caso 2: Acceso aleatorio — TLB hit rate bajo
+
+El índice `idx[]` fue mezclado con Fisher-Yates, por lo que cada acceso
+`arr[idx[i]]` salta a una página completamente distinta e impredecible.
+Con 4096 páginas y una TLB típica de 64 entradas, la probabilidad de que
+la página necesaria ya esté en TLB es mínima:
+
+```
+Acceso a arr[idx[0]] → página 3821 → TLB miss → carga traducción
+Acceso a arr[idx[1]] → página 102  → TLB miss → carga traducción
+Acceso a arr[idx[2]] → página 2957 → TLB miss → carga traducción
+Acceso a arr[idx[3]] → página 44   → TLB miss → carga traducción
+...
+```
+
+```
+Total páginas del arreglo = 4096 páginas
+Tamaño típico de TLB      = 64 entradas
+Probabilidad de TLB hit   = 64 / 4096 ≈ 1.5%
+
+Hit rate ≈ 1.5%    (casi cada acceso es un TLB miss)
+TLB misses ≈ 4.128.301  (de 4.194.304 accesos totales)
+```
+
+---
+
+### Comparación directa
+
+| Métrica | Secuencial | Aleatorio |
+|---|---|---|
+| Patrón de acceso | Predecible, contiguo | Impredecible, disperso |
+| TLB hit rate | ~99.9% | ~1.5% |
+| TLB misses | ~4.096 | ~4.128.301 |
+| Accesos extra a RAM | ~4.096 | ~4.128.301 |
+| Tiempo promedio | 12.40 ms | 52.09 ms |
+| Factor de lentitud | 1x | **4.2x** |
+
+Cada TLB miss implica un acceso adicional a RAM para consultar la tabla de páginas.
+Con ~4 millones de misses extra en el caso aleatorio, ese costo acumulado explica
+directamente los 40ms de diferencia observados en las mediciones.
+
+> Este experimento demuestra que la localidad de referencia no es solo un
+> concepto teórico: tiene un impacto medible y significativo en el rendimiento
+> real de los programas. Escribir código que acceda a memoria de forma secuencial
+> y predecible es una de las optimizaciones más efectivas disponibles, sin cambiar
+> el algoritmo ni el hardware.
+
+### Punto 3. ¿Qué pasaría con páginas de 64KB en accesos aleatorios?
+
+### Impacto en el TLB
+
+Con páginas más grandes, cada entrada del TLB cubre un rango mayor de memoria,
+por lo que se necesitan menos entradas para cubrir el mismo arreglo:
+
+```
+Arreglo de 16MB con páginas de 4KB:
+  Total páginas = 16MB / 4KB  = 4.096 páginas
+  TLB de 64 entradas cubre   = 64 / 4.096  = 1.5% del arreglo
+
+Arreglo de 16MB con páginas de 64KB:
+  Total páginas = 16MB / 64KB = 256 páginas
+  TLB de 64 entradas cubre   = 64 / 256    = 25% del arreglo
+```
+
+Con páginas de 64KB la TLB puede cubrir el 25% del arreglo simultáneamente
+en lugar del 1.5%. Esto significa que en el acceso aleatorio, 1 de cada 4 accesos
+encontraría su traducción ya en la TLB:
+
+```
+Páginas de 4KB:                    Páginas de 64KB:
+
+arr[idx[0]] → página 3821 → miss   arr[idx[0]] → página 238 → miss
+arr[idx[1]] → página 102  → miss   arr[idx[1]] → página 14  → miss
+arr[idx[2]] → página 2957 → miss   arr[idx[2]] → página 238 → HIT 
+arr[idx[3]] → página 44   → miss   arr[idx[3]] → página 71  → miss
+arr[idx[4]] → página 1203 → miss   arr[idx[4]] → página 14  → HIT 
+...                                ...
+
+Hit rate ≈ 1.5%                    Hit rate ≈ 25%
+```
+
+**Desde el punto de vista del TLB: mejora.**
+
+---
+
+### Impacto en el uso de memoria
+
+Sin embargo, páginas más grandes introducen más fragmentación interna:
+
+```
+Páginas de 4KB:
+  Desperdicio máximo por proceso = 4KB - 1 = 4.095 bytes ≈ 4KB
+
+Páginas de 64KB:
+  Desperdicio máximo por proceso = 64KB - 1 = 65.535 bytes ≈ 64KB
+```
+
+Un proceso que necesita apenas 1 byte más que un múltiplo de 64KB
+desperdicia hasta 64KB en su última página. Con muchos procesos activos
+este desperdicio se acumula rápidamente:
+
+```
+100 procesos × hasta 64KB desperdiciados = hasta 6.4MB desperdiciados
+solo en fragmentación interna de la última página de cada proceso
+```
+
+Además, cada TLB miss con páginas de 64KB implica cargar 64KB desde disco
+si la página no está en RAM, lo que hace que los page faults sean mucho
+más costosos:
+
+```
+Page fault con página de 4KB  → leer  4KB desde disco
+Page fault con página de 64KB → leer 64KB desde disco  (16x más lento)
+```
+
+**Desde el punto de vista del uso de memoria: empeora.**
+
+---
+
+### Resumen
+
+| Métrica | Páginas 4KB | Páginas 64KB |
+|---|---|---|
+| Páginas para cubrir 16MB | 4.096 | 256 |
+| TLB hit rate (acceso aleatorio) | ~1.5% | ~25% |
+| TLB misses | ~4.1 millones | ~3.1 millones |
+| Fragmentación interna máxima | ~4KB | ~64KB |
+| Costo de page fault | bajo | 16x mayor |
+| Entradas de tabla de páginas | 4.096 | 256 |
+
+> El tamaño de página es un compromiso clásico en diseño de SO: páginas grandes
+> mejoran el hit rate del TLB y reducen el tamaño de la tabla de páginas, pero
+> aumentan la fragmentación interna y el costo de cada page fault. Por eso los
+> SO modernos usan huge pages (2MB o 1GB en x86-64) de forma selectiva,
+> solo para regiones de memoria grandes y de acceso frecuente, manteniendo
+> páginas de 4KB como tamaño base para el resto.
+
+## Actividad 7.2: Comportamiento de los TLB
+### Punto 1: ¿Cuánta memoria puede cubrir un TLB de 64 entradas con páginas de 4KB?
+ 
+**Cálculo:**
+
+```
+Memoria cubierta = entradas TLB × tamaño de página
+                 = 64 × 4KB
+                 = 256KB
+```
+
+Con 64 entradas el TLB puede mantener simultáneamente las traducciones de
+**64 páginas distintas**, cubriendo un total de **256KB de memoria** sin
+generar ningún miss.
+
+---
+
+#### ¿Es suficiente para un proceso moderno típico?
+
+**No.** 256KB es insuficiente para la mayoría de procesos modernos:
+
+```
+Uso de memoria típico de procesos modernos:
+
+Navegador web       →  500MB – 2GB  por pestaña
+JVM (Java)          →  256MB – 1GB  mínimo
+Servidor de base de datos → 1GB – 64GB
+Editor de código    →  200MB – 800MB
+Proceso simple en C →   5MB  – 50MB  ← el más cercano a 256KB
+```
+
+Incluso un proceso simple en C que usa 5MB de heap ya necesita:
+
+```
+Páginas requeridas = 5MB / 4KB = 1.280 páginas
+TLB solo cubre     =              64 páginas  (5% del total)
+```
+
+---
+
+#### ¿Cómo lo compensan los procesadores reales?
+
+Los procesadores modernos usan varias estrategias para mitigar esta limitación:
+
+**1. TLB multinivel:**
+igual que la memoria caché, existe un TLB L1 (pequeño y rápido) y un TLB L2
+(más grande y algo más lento):
+
+```
+Intel Core i7 (típico):
+  TLB L1 datos:      64 entradas  → cubre  256KB
+  TLB L2 unificado: 1536 entradas → cubre    6MB
+```
+
+**2. Huge Pages:**
+usar páginas de 2MB en lugar de 4KB multiplica la cobertura por 512:
+
+```
+64 entradas × 2MB = 128MB cubiertos sin miss
+```
+
+**3. Prefetching y localidad:**
+el hardware predice qué páginas se usarán próximamente y carga sus
+traducciones en el TLB antes de que se necesiten.
+
+---
+
+#### Resumen
+
+| Parámetro | Valor |
+|---|---|
+| Entradas TLB | 64 |
+| Tamaño de página | 4KB |
+| Memoria cubierta sin miss | **256KB** |
+| Memoria típica de un proceso | **100MB – 2GB** |
+| ¿Es suficiente? | **No** |
+| Solución principal | TLB L2 + Huge Pages |
+
+> 256KB puede parecer poco, pero gracias a la localidad de referencia la
+> mayoría de los programas bien escritos trabajan intensamente sobre un conjunto
+> de páginas pequeño en cada momento (working set), por lo que un TLB de 64
+> entradas logra hit rates del 99%+ en código secuencial, como se demostró
+> en el experimento anterior.
+
+### Punto 2: ¿Qué es un TLB Shootdown?
+
+Un TLB shootdown es el proceso por el cual un procesador obliga a todos los
+demás procesadores del sistema a invalidar entradas específicas de sus TLBs locales
+cuando una traducción de dirección virtual cambia o es eliminada.
+
+Ocurre porque en un sistema multiprocesador cada CPU tiene su propio TLB,
+y esos TLBs pueden tener copias de la misma traducción. Si una traducción cambia
+en uno de ellos, los demás quedan con información desactualizada (*stale entries*).
+
+---
+
+#### ¿Cuándo ocurre?
+
+El TLB shootdown ocurre cada vez que el SO modifica la tabla de páginas de un
+proceso que puede estar ejecutándose en múltiples CPUs simultáneamente:
+
+```
+Situaciones típicas:
+
+1. munmap()      → el proceso libera un rango de memoria virtual
+2. mprotect()    → cambian los permisos de una página (R/W → solo lectura)
+3. fork()        → se crea un nuevo proceso (Copy-On-Write)
+4. swapping      → el SO desaloja una página a disco y invalida su PTE
+5. mremap()      → se remapea un rango de direcciones virtuales
+```
+
+**Ejemplo concreto:**
+
+```
+CPU 0 ejecuta proceso P          CPU 1 ejecuta proceso P
+TLB[VPN=42] → PFN=100           TLB[VPN=42] → PFN=100
+                                              ↑ misma entrada
+
+El SO en CPU 0 ejecuta munmap() sobre la página VPN=42:
+  → invalida PTE en tabla de páginas
+  → invalida TLB[VPN=42] en CPU 0
+  → ¿y CPU 1?  ← todavía tiene la traducción stale ¡MAL!
+
+Si CPU 1 accede a VPN=42 con la entrada stale:
+  → traduciría a PFN=100 (que ya no le pertenece al proceso)
+  → acceso a memoria de otro proceso  ← violación de seguridad ¡MAL!
+```
+
+Para evitar esto, el SO dispara un TLB shootdown hacia CPU 1.
+
+---
+
+#### ¿Cómo funciona el mecanismo?
+
+```
+CPU 0 (inicia el shootdown)              Otras CPUs
+
+1. Modifica la PTE en la tabla
+   de páginas compartida
+
+2. Envía IPI (Inter-Processor        →  3. Reciben la interrupción
+   Interrupt) a todas las CPUs           y pausan su ejecución
+   afectadas
+
+                                         4. Invalidan la entrada
+                                            específica en su TLB
+                                            (INVLPG en x86)
+
+                                         5. Envían ACK a CPU 0
+
+6. CPU 0 recibe todos los ACKs
+   y continúa su ejecución
+```
+
+---
+
+#### ¿Por qué es una operación costosa?
+
+El TLB shootdown es costoso por varias razones que se acumulan:
+
+**1. Interrupciones entre CPUs (IPI):**
+enviar una interrupción a otra CPU no es instantáneo. El bus de interconexión
+entre procesadores introduce latencia, y esta latencia escala con el número
+de CPUs del sistema:
+
+```
+Sistema de 4 CPUs:   3 IPIs  → latencia moderada
+Sistema de 64 CPUs: 63 IPIs  → latencia severa
+```
+
+**2. Pausa forzada en todas las CPUs receptoras:**
+cada CPU que recibe el IPI debe **interrumpir lo que está haciendo**, guardar
+su estado, ejecutar la invalidación del TLB y enviar el ACK. Todo el trabajo
+útil que esas CPUs estaban realizando se detiene:
+
+```
+CPU 1 ejecutando trabajo útil:
+────────────────────┬──────────────┬────────────────────
+  trabajo normal    │  TLB flush   │  trabajo normal
+                    │  (pausa)     │
+                    └──────────────┘
+                      tiempo perdido
+```
+
+**3. CPU iniciadora debe esperar todos los ACKs:**
+CPU 0 no puede continuar hasta confirmar que todas las CPUs han invalidado
+su TLB. Si una CPU tarda, todas las demás ya terminaron pero CPU 0 sigue
+bloqueada esperando.
+
+**4. TLB warming tras el shootdown:**
+después de invalidar entradas, cada CPU debe recargar las traducciones desde
+la tabla de páginas cuando vuelva a necesitarlas, generando una ráfaga de
+TLB misses que degrada el rendimiento temporalmente.
+
+```
+Costo total de un TLB shootdown:
+
+  Latencia IPI:          ~200-500 ns por CPU
+  Pausa en CPUs:         ~100-300 ns por CPU
+  TLB warming posterior: ~1-10 μs dependiendo del working set
+
+En un servidor de 64 CPUs con shootdowns frecuentes:
+  → puede consumir hasta un 10-20% del tiempo total de CPU
+```
+
+---
+
+### Resumen
+
+| Aspecto | Detalle |
+|---|---|
+| ¿Qué es? | Invalidación forzada de TLBs en todas las CPUs del sistema |
+| ¿Cuándo ocurre? | Al modificar PTEs: munmap, mprotect, fork, swap |
+| ¿Por qué es necesario? | Para mantener coherencia entre TLBs locales de cada CPU |
+| ¿Por qué es costoso? | IPIs, pausas forzadas, espera de ACKs y TLB warming |
+| ¿Escala bien? | No: el costo crece con el número de CPUs del sistema |
+
+> El TLB shootdown es uno de los costos ocultos más significativos en sistemas
+> multiprocesador de alta escala. Bases de datos, hipervisores y kernels de SO
+> modernos dedican esfuerzo considerable a reducir la frecuencia de shootdowns
+> agrupando modificaciones de PTEs, usando huge pages (menos entradas que
+> invalidar) y diseñando estructuras de datos que minimicen el remapeo de memoria.
+
+### Punto 3: TLB gestionado por hardware vs software
+
+#### TLB por hardware (CISC / x86)
+
+El hardware maneja automáticamente los TLB misses. Cuando ocurre un miss,
+la MMU recorre la tabla de páginas en RAM (*page walk*) sin intervención
+del SO, carga la traducción en el TLB y reintenta el acceso.
+
+```
+TLB miss en x86:
+  CPU → miss → MMU hace page walk automático → carga PTE → reintenta
+  (el SO nunca se entera si la página está presente)
+```
+
+El SO solo interviene si la página no está en RAM (page fault).
+La tabla de páginas debe tener un formato fijo que el hardware entienda
+(en x86: estructura de 4 niveles con formato específico).
+
+#### TLB por software (RISC / MIPS)
+
+El hardware simplemente lanza una excepción en cada TLB miss. Es el SO
+quien decide cómo buscar la traducción, en qué estructura, y cómo cargarla
+en el TLB mediante instrucciones privilegiadas.
+
+```
+TLB miss en MIPS:
+  CPU → miss → excepción → SO busca la traducción → carga en TLB → reintenta
+  (el SO controla todo el proceso)
+```
+
+#### Comparación
+
+| Aspecto | Hardware (x86) | Software (MIPS) |
+|---|---|---|
+| ¿Quién maneja el miss? | La MMU automáticamente | El SO mediante excepción |
+| Formato de tabla de páginas | Fijo (impuesto por hardware) | Libre (decide el SO) |
+| Velocidad en miss | Mayor (sin excepción) | Menor (overhead de excepción) |
+| Flexibilidad para el SO | Baja | Alta |
+| Complejidad del hardware | Alta | Baja |
+
+#### ¿Cuál ofrece mayor flexibilidad?
+
+El **TLB por software (RISC/MIPS)**, porque el SO puede usar cualquier
+estructura para su tabla de páginas: tabla invertida, tabla hash, árbol,
+o cualquier formato optimizado para su caso de uso. No está atado a un
+formato impuesto por el hardware.
+
+Esto permite, por ejemplo, implementar tablas de páginas invertidas que
+escalan con la memoria física en lugar de con el espacio virtual, algo
+imposible en x86 sin extensiones especiales.
+
+> La contrapartida es el rendimiento: cada TLB miss en MIPS genera una
+> excepción que el SO debe manejar, lo que introduce más overhead que el
+> page walk automático del hardware en x86. Es el compromiso clásico entre
+> flexibilidad y velocidad.
