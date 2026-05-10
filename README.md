@@ -2607,7 +2607,7 @@ Durante el desarrollo de esta práctica se utilizó inteligencia artificial gene
 Es importante destacar que el uso de la IA fue estrictamente como herramienta de
 apoyo. Toda la información conceptual recibida fue analizada, comprendida y validada
 por los integrantes del grupo antes de ser incluida en el informe. Los programas en C
-fueron escritos, compilados y ejecutados directamente por el equipo, y los análisis de
+fueron compilados y ejecutados directamente por el equipo, y los análisis de
 salidas (Valgrind, simuladores, benchmarks) son producto del trabajo y razonamiento
 propio. La IA no reemplazó el proceso de aprendizaje sino que lo complementó.
 
