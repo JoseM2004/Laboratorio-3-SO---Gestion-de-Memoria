@@ -1,4 +1,12 @@
 # Laboratorio-3-SO---Gestion-de-Memoria
+## Integrantes
+
+| Nombre completo | Correo institucional | N° Documento |
+|---|---|---|
+| Miguel Angel Agudelo Vera | miguel.agudelo2@udea.edu.co | CC 1039678287 |
+| Jose Miguel Monsalve Marín | jmiguel.monsalve@udea.edu.co | CC 1038062019 |
+
+---
 ---
 # 1) Espacio de direcciones
 
@@ -2569,3 +2577,85 @@ imposible en x86 sin extensiones especiales.
 > excepción que el SO debe manejar, lo que introduce más overhead que el
 > page walk automático del hardware en x86. Es el compromiso clásico entre
 > flexibilidad y velocidad.
+
+---
+
+# Problemas presentados durante el desarrollo
+
+Durante el desarrollo de esta práctica no se presentaron problemas técnicos significativos.
+Los programas en C compilaron y ejecutaron correctamente en todos los casos, Valgrind
+detectó los errores esperados en `buggy_mem.c`, y los simuladores de Base & Bounds y
+paginación produjeron las salidas correctas. La instalación de las herramientas necesarias
+(`gcc`, `valgrind`) se realizó sin inconvenientes en el entorno Linux utilizado.
+
+---
+
+# Manifiesto de transparencia — Uso de IA generativa
+
+Durante el desarrollo de esta práctica se utilizó inteligencia artificial generativa
+(Claude de Anthropic) como herramienta de apoyo en los siguientes aspectos:
+
+- **Formato del informe:** Se empleó la IA para dar estructura y formato adecuado
+  al contenido del README en Markdown, asegurando claridad y consistencia en la
+  presentación de resultados, tablas y bloques de código.
+
+- **Apoyo en la investigación:** En algunos puntos conceptuales del laboratorio
+  (como el funcionamiento del TLB, TLB shootdown, estrategias de asignación de
+  memoria y diferencias entre allocators de usuario y kernel) se consultó la IA
+  para profundizar en los temas y contrastar con el material del libro OSTEP.
+
+Es importante destacar que el uso de la IA fue estrictamente como herramienta de
+apoyo. Toda la información conceptual recibida fue analizada, comprendida y validada
+por los integrantes del grupo antes de ser incluida en el informe. Los programas en C
+fueron escritos, compilados y ejecutados directamente por el equipo, y los análisis de
+salidas (Valgrind, simuladores, benchmarks) son producto del trabajo y razonamiento
+propio. La IA no reemplazó el proceso de aprendizaje sino que lo complementó.
+
+---
+
+# Conclusiones
+
+1. **El espacio de direcciones virtuales es una ilusión gestionada por el SO:**
+   A través de la práctica se comprobó empíricamente que cada proceso recibe su
+   propio espacio de direcciones virtual, completamente aislado del resto. Dos
+   instancias del mismo programa pueden mostrar las mismas direcciones virtuales
+   para `main`, `global_var` y `heap_var`, pero estas apuntan a ubicaciones físicas
+   distintas, lo que demuestra que la virtualización de memoria es una abstracción
+   fundamental del sistema operativo.
+
+2. **La gestión manual de memoria en C exige disciplina y verificación constante:**
+   El análisis con Valgrind sobre `heap_demo.c` y `buggy_mem.c` evidenció que
+   errores como buffer overflow, memory leak y use-after-free son fáciles de cometer
+   y difíciles de detectar sin herramientas especializadas. Estos bugs no siempre
+   producen fallos inmediatos, lo que los hace especialmente peligrosos en sistemas
+   de producción donde pueden derivar en vulnerabilidades de seguridad graves.
+
+3. **El mecanismo Base & Bounds, aunque simple, tiene limitaciones fundamentales:**
+   El simulador `base_bounds.c` demostró que este esquema funciona correctamente
+   para aislar procesos, pero obliga a reservar un bloque contiguo de memoria para
+   cada proceso, generando fragmentación externa y desperdicio interno. Esta
+   limitación fue la motivación histórica para el desarrollo de la segmentación y
+   posteriormente la paginación.
+
+4. **La paginación resuelve la fragmentación externa a costa de overhead en la traducción:**
+   El simulador `paging_sim.c` mostró cómo la tabla de páginas permite mapear
+   páginas virtuales a marcos físicos no contiguos, eliminando la fragmentación
+   externa. Sin embargo, cada acceso a memoria requiere consultar la tabla de páginas
+   en RAM (un acceso adicional), lo que hace indispensable el TLB como caché de
+   hardware para que el sistema sea eficiente en la práctica.
+
+5. **La localidad de acceso a memoria tiene un impacto medible y significativo en el rendimiento:**
+   El benchmark `tlb_locality.c` demostró de forma cuantitativa que los accesos
+   secuenciales son considerablemente más rápidos que los aleatorios sobre el mismo
+   arreglo de datos. Esto se explica por el TLB: los accesos secuenciales generan
+   muchos TLB hits (alta localidad espacial), mientras que los aleatorios provocan
+   TLB misses frecuentes que obligan a consultar la tabla de páginas en memoria
+   principal, degradando notablemente el rendimiento.
+
+6. **Las estrategias de gestión del espacio libre afectan directamente la fragmentación:**
+   El análisis de First Fit y Best Fit sobre la lista libre del ejercicio 6.1 mostró
+   que la elección del algoritmo de asignación influye en cómo se distribuyen los
+   huecos en memoria. La ausencia de coalescing (fusión de bloques libres adyacentes)
+   puede llevar a que solicitudes fallen aunque haya suficiente memoria total
+   disponible, lo que ilustra que la gestión eficiente del heap es tan importante
+   como la cantidad de memoria física instalada.
