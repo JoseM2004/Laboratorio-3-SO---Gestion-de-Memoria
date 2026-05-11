@@ -1,5 +1,5 @@
 # Laboratorio-3-SO---Gestion-de-Memoria
-## Link del video sustentacion: https://www.youtube.com/watch?v=NJlAuqNaP9k
+## Link del video sustentacion: https://www.youtube.com/watch?v=_6tJs3oiOWs
 
 ## Integrantes
 
