@@ -894,7 +894,7 @@ cada proceso tiene múltiples segmentos (código, heap, stack), cada uno con su 
 par base & bounds. Así cada segmento ocupa solo la memoria que realmente necesita,
 reduciendo el desperdicio y aprovechando mejor los huecos disponibles.
 ---
-# 4 Paginación 
+# 4 Segmentación 
 ## 4.1 Traducción manual con tabla de segmentos
 ### Punto 1: Cálculo paso a paso para cada VA
 #### Reglas de traducción
