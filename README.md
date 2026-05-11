@@ -1,4 +1,6 @@
 # Laboratorio-3-SO---Gestion-de-Memoria
+## Link del video sustentacion: 
+
 ## Integrantes
 
 | Nombre completo | Correo institucional | N° Documento |
